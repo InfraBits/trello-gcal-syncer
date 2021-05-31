@@ -28,6 +28,7 @@ SOFTWARE.
 """
 import configparser
 import logging
+import logging.handlers
 import os
 import sys
 from dataclasses import dataclass
@@ -269,4 +270,7 @@ def main():
 
 if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+    if PosixPath('/dev/log').exists():
+        logger.addHandler(logging.handlers.SysLogHandler('/dev/log'))
+
     main()
