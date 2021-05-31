@@ -125,7 +125,7 @@ def get_expected_events(cfg: Config):
 
         expected_events.append(
             Event(
-                sha256(f'{card["id"]}xxx@trello.com'.encode("utf-8")).hexdigest(),
+                sha256(f'{card["id"]}@trello.com'.encode("utf-8")).hexdigest(),
                 f'{card["name"]} [{lists_by_id[card["idList"]]["name"]}]',
                 description,
                 start_date,
