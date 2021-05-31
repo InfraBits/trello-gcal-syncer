@@ -136,21 +136,23 @@ def get_expected_events(cfg: Config):
 
 def get_google_creds():
     creds = None
-    if PosixPath("token.json").exists():
+    token_path = os.environ.get("GOOGLE_APPLICATION_TOKEN", "token.json")
+
+    if PosixPath(token_path).exists():
         creds = Credentials.from_authorized_user_file(
-            "token.json", ["https://www.googleapis.com/auth/calendar.events"]
+            token_path, ["https://www.googleapis.com/auth/calendar.events"]
         )
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                "credentials.json",
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "credentials.json"),
                 ["https://www.googleapis.com/auth/calendar.events"],
             )
             creds = flow.run_local_server(port=0)
 
-        with open("token.json", "w") as token:
+        with open(token_path, "w") as token:
             token.write(creds.to_json())
 
     return creds
