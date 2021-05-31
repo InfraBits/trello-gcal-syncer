@@ -30,6 +30,7 @@ import configparser
 import logging.handlers
 import os
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from hashlib import sha256
@@ -69,7 +70,7 @@ class Config:
 
         return Config(
             cfg["trello"]["access_key"],
-            cfg["trello"]["access_token"],
+            cfg["trello"].get("access_token"),
             cfg["trello"]["board_id"],
             cfg["google"]["calendar_id"],
             get_google_creds(),
@@ -100,23 +101,65 @@ def get_lists_by_id(cfg: Config):
     return {list["id"]: list for list in r.json()}
 
 
+def get_checklists_by_id(cfg: Config):
+    r = requests.get(
+        f"https://api.trello.com/1/boards/{cfg.trello_board_id}/checklists",
+        params={
+            "key": cfg.trello_access_key,
+            "token": cfg.trello_access_token,
+        },
+    )
+    r.raise_for_status()
+    return {clist["id"]: clist for clist in r.json()}
+
+
+def update_card_position(cfg: Config, card_id: int, position: int):
+    r = requests.put(
+        f"https://api.trello.com/1/cards/{card_id}",
+        params={
+            "key": cfg.trello_access_key,
+            "token": cfg.trello_access_token,
+            "pos": position,
+        },
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def get_expected_events(cfg: Config):
     expected_events: List[Event] = []
     lists_by_id = get_lists_by_id(cfg)
+    checklists_by_id = get_checklists_by_id(cfg)
+
     for card in get_cards(cfg):
         # No time data - can't map to a calendar
         if not card["due"]:
             continue
 
+        checklist_items = []
+        if card["idChecklists"]:
+            for clist in card["idChecklists"]:
+                for clitem in checklists_by_id[clist]['checkItems']:
+                    checklist_items.append(f'[{"X" if clitem["state"] == "complete" else " "}]'
+                                           f' {clitem["name"]}')
+
+        description = ''
         if card["desc"]:
-            description = f'{card["desc"]}\\n\\nCard URL: {card["url"]}'
-        else:
-            description = f'Card URL: {card["url"]}'
+            description += f'{card["desc"]}\\n\\n'
+
+            if checklist_items:
+                description += '---------------------------\\n'
+
+        if checklist_items:
+            description += '\n'.join(checklist_items)
+            description += '\n\n'
+
+        description += f'Card URL: {card["url"]}'
 
         if card["start"]:
             start_date = datetime.strptime(
                 card["start"], "%Y-%m-%dT%H:%M:%S.%f%z"
-            ).replace(hour=0, minute=0, second=0, microsecond=0)
+            ).astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             due_date = datetime.strptime(card["due"], "%Y-%m-%dT%H:%M:%S.%f%z")
         else:
             due_date = datetime.strptime(card["due"], "%Y-%m-%dT%H:%M:%S.%f%z")
@@ -256,9 +299,7 @@ def update_events(cfg: Config, events: List[Event]):
     batch.execute()
 
 
-def main():
-    cfg = Config.from_file(PosixPath(os.environ.get("TRELLO_ICS_CFG", "trello-gcal-syncer.cfg")))
-
+def sync_events(cfg: Config):
     expected_events = get_expected_events(cfg)
     active_events, deleted_events = get_current_events(cfg)
 
@@ -288,6 +329,58 @@ def main():
         for event in expected_events
         if event not in active_events and event.id in known_event_ids
     ])
+
+
+def sort_cards(cfg: Config):
+    cards_by_list = defaultdict(list)
+
+    lists_by_id = get_lists_by_id(cfg)
+    for card in get_cards(cfg):
+        cards_by_list[card["idList"]].append(card)
+
+    for listId, cards in cards_by_list.items():
+        logger.info(f'Sorting cards in {lists_by_id[listId]["name"]}')
+        sorted_cards = sorted(
+            cards,
+            key=lambda c: [
+                (
+                    datetime.strptime(c["due"], "%Y-%m-%dT%H:%M:%S.%f%z")
+                    if c["due"] else
+                    (
+                        datetime.utcnow() + timedelta(days=1825)
+                    ).astimezone(timezone.utc)
+                ),
+                c["name"],
+                c["id"]
+            ]
+        )
+
+        # The position does not appear to be literally stored & thus is not returned the same
+        # So re-order every card if our overall order does not match what we expect :(
+        if [c["id"] for c in sorted_cards] != [c["id"] for c in cards]:
+            for x, card in enumerate(sorted_cards):
+                logger.info(f"Moving card {card['id']} to position {x} from {card['pos']}")
+                update_card_position(cfg, card["id"], x+1)
+
+
+def main():
+    cfg = Config.from_file(PosixPath(os.environ.get("TRELLO_ICS_CFG", "trello-gcal-syncer.cfg")))
+
+    if not cfg.trello_access_token:
+        import urllib.parse
+        params = urllib.parse.urlencode({
+            "key": cfg.trello_access_key,
+            "response_type": "token",
+            "scope": "read,write",
+            "expiration": "never",
+            "name": "Trello -> Google Calendar syncer",
+        })
+
+        logger.info(f'Visit https://api.trello.com/1/authorize?{params} & configure the token')
+        return
+
+    sync_events(cfg)
+    sort_cards(cfg)
 
 
 if __name__ == "__main__":
