@@ -27,7 +27,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 import configparser
-import logging
 import logging.handlers
 import os
 import sys
@@ -125,7 +124,7 @@ def get_expected_events(cfg: Config):
 
         expected_events.append(
             Event(
-                sha256(card["id"].encode("utf-8")).hexdigest(),
+                sha256(f'{card["id"]}@trello.com'.encode("utf-8")).hexdigest(),
                 f'{card["name"]} [{lists_by_id[card["idList"]]["name"]}]',
                 description,
                 start_date,
@@ -160,112 +159,135 @@ def get_google_creds():
 
 
 def get_current_events(cfg: Config):
-    service = build(
-        "calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False
-    )
-    events = service.events().list(calendarId=cfg.google_calendar_id).execute()
-    return [
-        Event(
+    service = build("calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False)
+    events = service.events().list(calendarId=cfg.google_calendar_id, showDeleted=True).execute()
+
+    active_events, deleted_events = [], []
+
+    for event in events["items"]:
+        e = Event(
             event["id"],
             event["summary"],
             event["description"],
             datetime.fromisoformat(event["start"]["dateTime"]),
             datetime.fromisoformat(event["end"]["dateTime"]),
         )
-        for event in events["items"]
-    ]
+        if event["status"] == "cancelled":
+            deleted_events.append(e)
+        else:
+            active_events.append(e)
+    return active_events, deleted_events
 
 
-def create_event(cfg: Config, event: Event):
-    build(
-        "calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False
-    ).events().insert(
-        calendarId=cfg.google_calendar_id,
-        body={
-            "summary": event.name,
-            "description": event.description,
-            "id": event.id,
-            "start": {
-                "dateTime": event.start_date.astimezone(timezone.utc).isoformat(),
-                "timeZone": "UTC",
-            },
-            "end": {
-                "dateTime": event.end_date.astimezone(timezone.utc).isoformat(),
-                "timeZone": "UTC",
-            },
-        },
-    ).execute()
+def create_events(cfg: Config, events: List[Event]):
+    if not events:
+        return
+    logger.info(f"Creating {len(events)} events: {', '.join([e.id for e in events])}")
+
+    service = build("calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False)
+    batch = service.new_batch_http_request()
+    for event in events:
+        batch.add(
+            service.events().insert(
+                calendarId=cfg.google_calendar_id,
+                body={
+                    "summary": event.name,
+                    "description": event.description,
+                    "status": "confirmed",
+                    "id": event.id,
+                    "start": {
+                        "dateTime": event.start_date.astimezone(timezone.utc).isoformat(),
+                        "timeZone": "UTC",
+                    },
+                    "end": {
+                        "dateTime": event.end_date.astimezone(timezone.utc).isoformat(),
+                        "timeZone": "UTC",
+                    },
+                },
+            ),
+            callback=lambda id, resp, ex: logger.info(f'Created {event.id}: [{id}] {resp} / {ex}')
+        )
+    batch.execute()
 
 
-def remove_event(cfg: Config, event: Event):
-    build(
-        "calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False
-    ).events().delete(
-        calendarId=cfg.google_calendar_id,
-        eventId=event.id,
-    ).execute()
+def remove_events(cfg: Config, events: List[Event]):
+    if not events:
+        return
+    logger.info(f"Removing {len(events)} events: {', '.join([e.id for e in events])}")
+
+    service = build("calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False)
+    batch = service.new_batch_http_request()
+    for event in events:
+        batch.add(
+            service.events().delete(calendarId=cfg.google_calendar_id, eventId=event.id),
+            callback=lambda id, resp, ex: logger.info(f'Removed {event.id}: [{id}] {resp} / {ex}')
+        )
+    batch.execute()
 
 
-def update_event(cfg: Config, event: Event):
-    build(
-        "calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False
-    ).events().update(
-        calendarId=cfg.google_calendar_id,
-        eventId=event.id,
-        body={
-            "summary": event.name,
-            "description": event.description,
-            "start": {
-                "dateTime": event.start_date.astimezone(timezone.utc).isoformat(),
-                "timeZone": "UTC",
-            },
-            "end": {
-                "dateTime": event.end_date.astimezone(timezone.utc).isoformat(),
-                "timeZone": "UTC",
-            },
-        },
-    ).execute()
+def update_events(cfg: Config, events: List[Event]):
+    if not events:
+        return
+    logger.info(f"Updating {len(events)} events: {', '.join([e.id for e in events])}")
+
+    service = build("calendar", "v3", credentials=cfg.google_credentials, cache_discovery=False)
+    batch = service.new_batch_http_request()
+    for event in events:
+        batch.add(
+            service.events().update(
+                calendarId=cfg.google_calendar_id,
+                eventId=event.id,
+                body={
+                    "summary": event.name,
+                    "description": event.description,
+                    "status": "confirmed",
+                    "start": {
+                        "dateTime": event.start_date.astimezone(timezone.utc).isoformat(),
+                        "timeZone": "UTC",
+                    },
+                    "end": {
+                        "dateTime": event.end_date.astimezone(timezone.utc).isoformat(),
+                        "timeZone": "UTC",
+                    },
+                },
+            ),
+            callback=lambda id, resp, ex: logger.info(f'Updated {event.id}: [{id}] {resp} / {ex}')
+        )
+    batch.execute()
 
 
 def main():
     cfg = Config.from_file(PosixPath(os.environ.get("TRELLO_ICS_CFG", "trello-gcal-syncer.cfg")))
 
     expected_events = get_expected_events(cfg)
-    current_events = get_current_events(cfg)
-    logger.info(
-        f"Found {len(expected_events)} expected events, {len(current_events)} current events"
-    )
+    active_events, deleted_events = get_current_events(cfg)
 
+    logger.info(f"Found {len(expected_events)} expected events, "
+                f"{len(active_events)} active events, "
+                f"{len(deleted_events)} deleted events")
+
+    # Events are just objects with a unique ID
+    # Thus we can only have 1 entry for each task ever =\
     expected_event_ids = [e.id for e in expected_events]
-    current_event_ids = [e.id for e in current_events]
+    known_event_ids = [e.id for e in active_events + deleted_events]
 
-    events_to_add = [
+    create_events(cfg, [
         event
         for event in expected_events
-        if event not in current_events and event.id not in current_event_ids
-    ]
-    events_to_remove = [
+        if event not in active_events and event.id not in known_event_ids
+    ])
+
+    remove_events(cfg, [
         event
-        for event in current_events
+        for event in active_events
         if event not in expected_events and event.id not in expected_event_ids
-    ]
-    events_to_update = [
+    ])
+
+    update_events(cfg, [
         event
         for event in expected_events
-        if event not in current_events and event.id in current_event_ids
-    ]
-
-    for event in events_to_add:
-        logger.info(f"Creating event: {event}")
-        create_event(cfg, event)
-
-    for event in events_to_remove:
-        logger.info(f"Removing event: {event}")
-        remove_event(cfg, event)
-
-    for event in events_to_update:
-        logger.info(f"Updating event: {event}")
-        update_event(cfg, event)
+        if event not in active_events and event.id in known_event_ids
+    ])
 
 
 if __name__ == "__main__":
