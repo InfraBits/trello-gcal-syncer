@@ -355,6 +355,10 @@ def sort_cards(cfg: Config):
             ]
         )
 
+        # Don't re-order lists that don't contain cards with due dates
+        if not [c for c in sorted_cards if c["due"]]:
+            continue
+
         # The position does not appear to be literally stored & thus is not returned the same
         # So re-order every card if our overall order does not match what we expect :(
         if [c["id"] for c in sorted_cards] != [c["id"] for c in cards]:
