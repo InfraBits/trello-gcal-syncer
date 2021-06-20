@@ -165,10 +165,14 @@ def get_expected_events(cfg: Config):
             due_date = datetime.strptime(card["due"], "%Y-%m-%dT%H:%M:%S.%f%z")
             start_date = due_date - timedelta(hours=1)
 
+        summary = f'{card["name"]} [{lists_by_id[card["idList"]]["name"]}]'
+        if card.get("dueComplete"):
+            summary = "".join([f'\u0336{c}' for c in summary])
+
         expected_events.append(
             Event(
                 sha256(f'{card["id"]}@trello.com'.encode("utf-8")).hexdigest(),
-                f'{card["name"]} [{lists_by_id[card["idList"]]["name"]}]',
+                summary,
                 description,
                 start_date,
                 due_date,
@@ -185,7 +189,8 @@ def get_google_creds():
         creds = Credentials.from_authorized_user_file(
             token_path, ["https://www.googleapis.com/auth/calendar.events"]
         )
-    if not creds or not creds.valid:
+
+    if not creds or not creds.valid or creds.expired:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
