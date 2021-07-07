@@ -1,0 +1,23 @@
+name: Update dependencies using pyup
+on:
+  schedule:
+    - cron: '30 8 * * *'
+  push:
+    branches:
+      - main
+permissions:
+  contents: write
+  issues: read
+  pull-requests: write
+jobs:
+  pyup:
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v2
+      with: {python-version: '3.9'}
+    - name: Install pyup
+      run: pip install git+https://github.com/DamianZaremba/pyup.git@gh-action-fixes
+    - name: Run pyup
+      run: pyup --provider=github --provider_url=https://api.github.com --integration --repo=${GITHUB_REPOSITORY} --branch=main --user-token=${{ secrets.GITHUB_TOKEN }}
